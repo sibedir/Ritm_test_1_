@@ -133,6 +133,11 @@
   <ItemGroup>
     <ClCompile Include="Ritm_test_1_.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="agent_function.h" />
+    <ClInclude Include="my_graph.h" />
+    <ClInclude Include="ritm_test_suppor.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
