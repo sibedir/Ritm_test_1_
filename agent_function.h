@@ -11,21 +11,28 @@
 #include <functional>
 
 #include "my_graph.h"
+#include "ritm_test_suppor.h"
 
 template <
-    typename target_graph_type,
-    std::unsigned_integral rules_idx_t_ = typename target_graph_type::idx_type,
+    typename TTargetGraph_,
+    std::unsigned_integral rules_idx_t_ = typename TTargetGraph_::idx_type,
     std::unsigned_integral func_arg_idx_t_ = unsigned short
 >
 class TRules {
+#ifdef TEST_MODE
+    friend int test_main();
+#endif // TEST_MODE
 public:
-    using value_type = target_graph_type::attr_value_type;
-    using link_idx_t = target_graph_type::idx_type;
-    using rules_idx_t = rules_idx_t_;
-    using func_arg_idx_t = func_arg_idx_t_;
+    using TTargetGraph = TTargetGraph_; // тип целевого графа
+    using value_type = TTargetGraph::attr_value_type; // тип атрибутов (результатов работы функций)
+    using link_idx_t = TTargetGraph::idx_type; // тип для номеров элементов графа
+    using rules_idx_t = rules_idx_t_; // тип для номеров правил агент функции
+    using func_arg_idx_t = func_arg_idx_t_; // тип для номеров аргументов функций (например: "min a b" - 2 аргумента)
 
     using TRuleFuncArgs = std::vector<value_type>;
     using TRuleFunc = std::function<value_type(TRuleFuncArgs const&)>;
+    using TAttribute = TAttribute<value_type>;
+
 private:
 
     struct TRuleFuncSpec {
@@ -35,18 +42,13 @@ private:
 
     using TRuleFuncSpecMap = std::unordered_map<std::string, TRuleFuncSpec>;
 
-    enum class Graph_Elem_Type { Vert, Edge };
+    enum TRuleType { rtNone = 0, rtValue, rtVertLink, rtEdgeLink, rtFunc };
+    //                          значение   ссылка на  ссылка на   функция
+    //                                       узел       ребро
 
-    static constexpr Graph_Elem_Type t = Graph_Elem_Type::Vert;
-
-    enum TRuleType { rtNone, rtValue, rtVertLink, rtEdgeLink, rtFunc };
-
-    template<Graph_Elem_Type type> struct TRuleLinkSpec {                                               };
-    template<                    > struct TRuleLinkSpec<Graph_Elem_Type::Vert> { static constexpr TRuleType type = rtVertLink; };
-    template<                    > struct TRuleLinkSpec<Graph_Elem_Type::Edge> { static constexpr TRuleType type = rtEdgeLink; };
-
+    // Класс "правило агент-функции"
     struct TRule {
-        TRuleType type{ rtNone };
+        TRuleType rule_type{ rtNone }; // вид правила
         union {
             value_type value;
             link_idx_t idx;
@@ -55,160 +57,213 @@ private:
 
         TRule() = default;
 
-        explicit TRule(value_type val)
-            : type{ rtValue }
+        // конструктор для значения
+        TRule(value_type val)
+            : rule_type{ rtValue }
             , value{ val }
         {};
 
-        template <typename graph_type>
-        explicit TRule(Graph_Elem_Type type, link_idx_t idx)
-            : type{ TRuleLinkSpec<type>::type }
+        // конструктор для ссылки
+        TRule(Graph_Elem_Type type, link_idx_t idx)
+            : rule_type{ type == getVert ? rtVertLink : rtEdgeLink }
             , idx{ idx }
         {};
 
-        explicit TRule(TRuleFuncSpecMap const& func_spec, std::string const& func_name)
-            : type{ rtFunc }
-        {
-            auto tmp = func_spec.find(func_name);
-            if (tmp == func_spec.end()) throw std::runtime_error("Unknown function: \"" + func_name + "\"");
-            func = &(tmp->second);
-        };
+        // конструктор для функции
+        TRule(TRuleFuncSpec const* func_spec)
+            : rule_type{ rtFunc }
+            , func{ func_spec }
+        {};
+
     };
 
 private:
-    TRuleFuncSpecMap functions_specification;
-    TAnnotatedGraph<TRule, asVert, rules_idx_t> rules;
-public:
-    void print_t() {
-        std::cout << typeid(rules.vert_[0].attribute()).name() << std::endl;
+    using TLinker = std::unordered_map<link_idx_t, rules_idx_t>;
+    using TRuleGraph = TAnnotatedGraph<TRule, asVert, rules_idx_t>;
+    using TRuleIterator = typename TRuleGraph::TIterator;
+
+    TLinker vert_linker{}; // линкер узлов (хранит номера правил, ссылающихся на узлы)
+    TLinker edge_linker{}; // линкер рёбер (хранит номера правил, ссылающихся на рёбра)
+    TRuleFuncSpecMap functions_specification{}; // спецификация функций (хранит указатели функций и количества аргументов)
+    TRuleGraph rules{}; // ГРАФ АГЕНТ-ФУНКЦИИ
+    bool ready = false; // отсортирован ли граф
+
+private:
+    // добавляет правило/узел типа "значение"
+    rules_idx_t Add_Value(value_type val) {
+        rules.AddVertex(val);
+        return rules.vertex.size() - 1;
     }
 
-    TRules() : functions_specification(), rules() {};
+    // добавляет узел типа "функция" (ссылка на спецификацию функции)
+    // ! НЕ создаёт зависимости/рёбра
+    rules_idx_t Add_Function(TRuleFuncSpec const* func_spec) {
+        rules.AddVertex(func_spec);
+        return rules.vertex.size() - 1;
+    }
 
+    /*
+    // добавляет узел типа "функция" (ссылка на спецификацию функции) по имени
+    // ! НЕ создаёт зависимости/рёбра
+    rules_idx_t Add_Function(std::string const& func_name) {
+        rules.AddVertex(functions_specification, func_name);
+        return rules.vertex.size() - 1;
+    }
+    */
+
+    // добавляет правило/узел типа "ссылка"
+    rules_idx_t Add_Link(Graph_Elem_Type elem_type, link_idx_t idx) {
+        TLinker& linker = (elem_type == getVert) ? vert_linker : edge_linker;
+
+        // ищем индекс елемента в линкере
+        auto it = linker.find(idx);
+
+        // если найден, то возвращаем его
+        if (it != linker.end()) return it->second;
+
+        // иначе, создаём новое правило "ссылка"
+        rules.AddVertex(elem_type, idx);
+        // и сохраняем в линкере номер правила, которое соответствует индексу элемента
+        rules_idx_t ri = rules.vertex.size() - 1;
+        linker.insert({ idx, ri });
+        return ri;
+    }
+
+    // чтение правила из строкового потока
+    rules_idx_t ReadRule(std::istringstream& IN) {
+        std::string str;
+        ReadValue(IN, str); // читаем первое слово
+
+        // Если это ссылка на елемент графа (зарезервированные слова "v" и "e")
+        if (str.size() == 1 and (str[0] == 'v' or str[0] == 'e')) {
+            Graph_Elem_Type et = str[0] == 'v' ? getVert : getEdge;
+            link_idx_t li;
+            ReadValue(IN, li);
+            return Add_Link(et, li - 1);
+        }
+        // Если это функция
+        TRuleFuncSpec const* fs = FunctionsSpec(str);
+        if (fs) {
+            // Считываем все аргументы во временный вектор
+            bool args_all_value = true;
+            std::vector<rules_idx_t> arg_idxs(fs->arg_count);
+            for (func_arg_idx_t i = 0; i < fs->arg_count; ++i) {
+                arg_idxs[i] = ReadRule(IN);
+                args_all_value &= rules.vertex[arg_idxs[i]].attribute().rule_type == rtValue;
+            }
+
+            // Если все аргументы - это значения, то расчет функции выполняется на месте
+            if (args_all_value) {
+                std::vector<value_type> args(fs->arg_count);
+                for (func_arg_idx_t i = 0; i < fs->arg_count; ++i) {
+                    args[i] = rules.vertex[arg_idxs[i]].attribute().value;
+                }
+                return Add_Value(fs->func(args));
+            }
+
+            // иначе, в графф агент-функции записываются соответствующие правила 
+            rules_idx_t ri = Add_Function(fs);
+            for (func_arg_idx_t i = fs->arg_count; i > 0 ; --i) {
+                // аргументы добавляются в обратном порядке,
+                // так как новые рёбра добавляются в начало списка узла
+                rules.AddEdge(ri, arg_idxs[i-1]);
+            }
+            return ri;
+        }
+
+        // То это значение
+        value_type val;
+        std::stringstream(str) >> val;
+        return Add_Value(val);
+    }
+
+public:
+
+    // регистрация новой функции
     void RegFunc(std::string name, func_arg_idx_t arg_count, TRuleFunc const& func) {
+        // лексемы "v" и "e" зарезервированы под ссылки
         if (name == "v" or name == "e") throw std::runtime_error("Invalid function name: \"" + name + "\"");
+
         TRuleFuncSpec& rfs = functions_specification[name];
         rfs.func = func;
         rfs.arg_count = arg_count;
     }
 
-    void Add_Value(value_type val) {
-        auto& r = rules.AddVertex();
-        r.attribute().type = rtValue;
-        r.attribute().value = val;
+    // получить ссылку на спецификацию функции по имени
+    TRuleFuncSpec const* FunctionsSpec(std::string name) const {
+        auto it = functions_specification.find(name);
+        return (it == functions_specification.end()) ? nullptr : &(it->second);
     }
 
-    void Add_Function(std::string func_name) {
-        auto& r = rules.AddVertex();
-        r.attribute() = TRule(functions_specification, func_name);
+    // чтение строки с правилом агент-функции
+    rules_idx_t ReadMainRule(Graph_Elem_Type elem_type, link_idx_t idx, std::istringstream& IN) {
+        ready = false;
+
+        rules_idx_t li = Add_Link(elem_type, idx);
+        rules_idx_t ri = ReadRule(IN);
+        rules.AddEdge(li, ri);
+        return li;
     }
 
-    void Add_VertexLink(link_idx_t idx) {
-        auto& r = rules.AddVertex();
-        r.attribute().type = rtVertLink;
-        r.attribute().idx = idx;
+    // подготовка агент-функции к применению на графы (топологическая сортировка)
+    void GetReady() {
+        rules.TopSort();
     }
 
-    void Add_EdgeLink(link_idx_t idx) {
-        auto& r = rules.AddVertex();
-        r.attribute().type = rtEdgeLink;
-        r.attribute().idx = idx;
+    // применению агент-функции на граф
+    void SetOn(TTargetGraph& graph) {
+        if (!ready) {
+            rules.TopSort();
+            ready = true;
+        }
+
+        std::vector<value_type> res(rules.vertex.size());
+
+        // для каждого правила последовательно выполняется
+        for (rules_idx_t ri = 0; ri < rules.vertex.size(); ++ri) {
+            TRuleIterator iter{ rules, ri };
+            TRule& r = rules.vertex[ri].attribute();
+
+            // если правило - это значение
+            if (r.rule_type == rtValue) {
+                res[ri] = r.value; // сохраняем значение
+                continue;
+            }
+
+            // если правило - это ссылка на узел
+            if (r.rule_type == rtVertLink) {
+                if (iter.end_e()) { // если ссылка ни от чего не зависит
+                    res[ri] = graph.vertex[r.idx].attribute; // читаем атрибут из целевого графа
+                }
+                else { // иначе
+                    res[ri] = res[iter.look_e()]; // сохраняем значение, от которого зависит ссылка
+                    graph.vertex[r.idx].attribute = res[ri]; // и записываем его в атрибут целевого графа
+                }
+                continue;
+            }
+
+            // аналогично для правила ссылка на ребро 
+            if (r.rule_type == rtEdgeLink) {
+                if (iter.end_e()) {
+                    res[ri] = graph.edge[r.idx].attribute;
+                }
+                else {
+                    res[ri] = res[iter.look_e()];
+                    graph.edge[r.idx].attribute = res[ri];
+                }
+                continue;
+            }
+
+            // если правило - это функция
+            //if (r.rule_type == rtFunc) {
+                std::vector<value_type> args(r.func->arg_count);
+                for (func_arg_idx_t i = 0; i < args.size(); ++i) { // последовательно читаем значения аргументов из уже готовых результатов
+                    args[i] = res[iter.look_e()]; // читаем аргумент
+                    iter.next_e(); // следующее ребро
+                }
+                res[ri] = r.func->func(args); // выполняем функцию и записываем результат
+            //    continue;
+            //}
+        }
     }
 };
-
-/*
-// чтение строки с правилом агент-функции
-TRuleBase& ReadRule(std::istream& IN) {
-    TRuleBase& result;
-    std::string buf;
-    IN >> buf;
-    if (buf == "min") {
-        result.type = rtFunc;
-        result.func.type = rftMin;
-    };
-    if (buf == "*") {
-        result.type = rtFunc;
-        result.func.type = rftProduct;
-    };
-    if (result.type == rtFunc) {
-        IN >> buf;
-        result.func.arg1.elemtype = (buf == "v") ? etVertix : etEdge;
-        IN >> result.func.arg1.elemindex;
-        result.func.arg1.elemindex--;
-        IN >> buf;
-        result.func.arg2.elemtype = (buf == "v") ? etVertix : etEdge;
-        IN >> result.func.arg2.elemindex;
-        result.func.arg2.elemindex--;
-        return result;
-    }
-
-    if (buf == "v") {
-        result.type = rtCopy;
-        result.copy.elemtype = etVertix;
-    };
-    if (buf == "e") {
-        result.type = rtCopy;
-        result.copy.elemtype = etEdge;
-    };
-    if (result.type == rtCopy) {
-        IN >> result.copy.elemindex;
-        result.copy.elemindex--;
-        return result;
-    }
-
-    result.type = rtValue;
-    result.value = std::stof(buf);
-    return result;
-}
-
-/* вспомогательные типы и методы для вычисления значений атрибутов ---------------------------------------- */
-enum TState { sEmpty, sCalc, sReady };
-/*
-float CalculateRules(
-    const TRule& rule,
-    TAnnotatedGraph<float>& graph,
-    std::vector<TState>& VertexState,
-    std::vector<TState>& EdgeState,
-    const std::vector<TRule>& VertexRules,
-    const std::vector<TRule>& EdgeRules)
-{
-    if (rule.type == rtValue) return rule.value;
-
-    if (rule.type == rtCopy) {
-        if (rule.copy.elemtype == etVertix) {
-            size_t i = rule.copy.elemindex;
-            TState s = VertexState[i];
-            if (s == sCalc) throw std::logic_error("Circular reference detected");
-            if (s == sReady) return graph.vertex[i].atr;
-
-            VertexState[i] = sCalc;
-            auto res = CalculateRules(VertexRules[i], graph, VertexState, EdgeState, VertexRules, EdgeRules);
-            graph.vertex[i].atr = res;
-            VertexState[i] = sReady;
-            return res;
-        }
-        else {
-            size_t i = rule.copy.elemindex;
-            TState s = EdgeState[i];
-            if (s == sCalc) throw std::logic_error("Circular reference detected");
-            if (s == sReady) return graph.edge[i].atr;
-
-            EdgeState[i] = sCalc;
-            auto res = CalculateRules(EdgeRules[i], graph, VertexState, EdgeState, VertexRules, EdgeRules);
-            graph.edge[i].atr = res;
-            EdgeState[i] = sReady;
-            return res;
-        }
-    }
-    TRule r;
-    r.type = rtCopy; r.copy = rule.func.arg1;
-    auto arg1 = CalculateRules(r, graph, VertexState, EdgeState, VertexRules, EdgeRules);
-    r.type = rtCopy; r.copy = rule.func.arg2;
-    auto arg2 = CalculateRules(r, graph, VertexState, EdgeState, VertexRules, EdgeRules);
-    switch (rule.func.type) {
-    case rftMin    : return std::min(arg1, arg2);
-    case rftProduct: return arg1 * arg2;
-    default: throw std::invalid_argument("Unknown agent-function");
-    }
-}
-*/

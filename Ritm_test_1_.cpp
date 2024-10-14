@@ -2,7 +2,7 @@
 // Visual Studio 2022
 // C++20
 
-#define TEST_MODE
+//#define TEST_MODE
 
 #include <iostream>
 #include <utility>
@@ -11,12 +11,116 @@
 #include "agent_function.h"
 #include "ritm_test_suppor.h"
 
+/* ******************************************************************************************************** */
+/*                                   ОСНОВНОЙ КОД ВЫПОЛНЕНИЯ ЗАДАЧИ                                         */
+/* ******************************************************************************************************** */
+
+[[nodiscard]] int complete_task(TInOut& IO) {
+
+    using TGraph = TAnnotatedGraph<float, asAll>;
+    using TRules = TRules<TGraph>;
+
+    try {
+        // Ввод размеров графа
+        if (IO.IsConsole()) std::cout << "Entering sizes...\n";
+
+        size_t NV, NE;
+
+        try {
+            IO.ReadLine(NV, NE);
+        }
+        catch (const std::exception& exc) { throw_abort(exc.what(), 2); }
+
+        TGraph graph;
+        graph.AddVertexes(NV);
+        IO.IgnorLine();
+
+        // Ввод рёбер
+        if (IO.IsConsole()) std::cout << "Entering edges...\n";
+
+        for (size_t i = 0; i < NE; ++i) {
+            size_t vi, vo;
+            try {
+                IO.ReadLine(vi, vo);
+            }
+            catch (const std::exception& exc) { throw_abort(exc.what(), 2); }
+
+            try {
+                graph.AddEdge(vi - 1, vo - 1);
+            }
+            catch (const std::exception& exc) { throw_abort(exc.what(), 3); }
+        }
+        IO.IgnorLine();
+
+        // Создаём агент-функцию и регестрируем функции
+        TRules agent_func;
+        agent_func.RegFunc("min", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] < v[1] ? v[0] : v[1]; });
+        agent_func.RegFunc("max", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] > v[1] ? v[0] : v[1]; });
+        agent_func.RegFunc("+", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] + v[1]; });
+        agent_func.RegFunc("-", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] - v[1]; });
+        agent_func.RegFunc("*", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] * v[1]; });
+        agent_func.RegFunc("/", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] / v[1]; });
+
+        // Читаем правила для агент-функции
+        try {
+            for (size_t i = 0; i < NV; ++i) {
+                auto str = IO.ReadLine();
+                agent_func.ReadMainRule(getVert, i, str);
+            }
+            for (size_t i = 0; i < NV; ++i) {
+                auto str = IO.ReadLine();
+                agent_func.ReadMainRule(getEdge, i, str);
+            }
+        }
+        catch (const std::exception& exc) { throw_abort(exc.what(), 2); }
+
+        // Вычисляем (применяем к графу)
+        agent_func.SetOn(graph);
+
+        // Заисываем результат
+        if (IO.IsConsole()) std::cout << "\nOutputting results...\n";
+
+        for (size_t i = 0; i < NV; i++) {
+            IO << graph.vertex[i].attribute << std::endl;
+        }
+        for (size_t i = 0; i < NE; i++) {
+            IO << graph.edge[i].attribute << std::endl;
+        }
+    }
+    catch (const EAbort& exc) {
+        std::string mes;
+        if (exc.exit_code() == 2) mes = "Error in line #" + std::to_string(IO.CurInputLine()) + ". ";
+        mes += exc.what();
+
+        std::ostream& err_out = IO.IsConsole() ? std::cerr : IO.OUT();
+        err_out << std::endl << exc.what() << std::endl;
+        return exc.exit_code();
+    }
+
+    return 0;
+}
+
+[[nodiscard]] int complete_task_by_file(std::string const& fin_name) {
+    bool f{ false };
+    try {
+        TInOut IO(fin_name);
+        f = true;
+        return complete_task(IO);
+    }
+    catch (const std::exception& exc) {
+        if (f) throw;
+        std::cerr << std::endl << exc.what() << std::endl;
+        return 1;
+    }
+}
+
 #ifndef TEST_MODE
 
 /* ******************************************************************************************************** */
 /*                                                MAIN                                                      */
 /* ******************************************************************************************************** */
 constexpr char const* default_fin_name = "test.gar"; // gar - graph and rures
+//constexpr char const* default_fin_name = "c:/Users/Халтурин/source/repos/Ritm_test_1_/x64/Debug/test.gar";
 
 int main(int argc, char* argv[])
 {
@@ -114,26 +218,54 @@ static inline int test_main()
 
     num_r = 1000;
 
+    std::unordered_map<int, char> m;
+    m[1] = '1';
+    m[2] = '2';
+    m[10] = '0';
+
+    auto tmp = m.find(2);
+    if (tmp == m.end()) throw std::runtime_error("Unknown");
+    auto r = tmp->second;
+
 
 #if 1
-    using TGraph = TAnnotatedGraph<float, asAll>;
-    using TRules = TRules<TGraph>;
+    {
+        using TGraph = TAnnotatedGraph<float, asAll>;
+        using TRules = TRules<TGraph>;
 
-    TRules rules{};
+        TRules rules{};
 
-    rules.print_t();
-    std::cin.get();
+        rules.RegFunc("+", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] + v[1]; });
+        rules.RegFunc("*", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] * v[1]; });
 
-    rules.RegFunc("+", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] + v[1]; });
-    rules.RegFunc("*", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] * v[1]; });
+        rules.Add_Value(7);
+        //rules.Add_Function("+");
+        //rules.Add_Function("-");
+        //rules.Add_Function("*");
+        rules.Add_Link(getVert, 12);
+        rules.Add_Link(getVert, 10);
+        rules.Add_Link(getEdge, 77);
+    }
+    {
+        using TGraph = TAnnotatedGraph<float, asAll>;
+        using TRules = TRules<TGraph>;
 
-    rules.Add_Value(7);
-    rules.Add_Function("+");
-    //rules.Add_Function("-");
-    rules.Add_Function("*");
-    rules.Add_VertexLink(12);
-    rules.Add_VertexLink(10);
-    rules.Add_EdgeLink(77);
+        TRules rules{};
+
+        rules.RegFunc("min", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] < v[1] ? v[0] : v[1]; });
+        rules.RegFunc("+", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] + v[1]; });
+        rules.RegFunc("*", 2, [](TRules::TRuleFuncArgs const& v) {return v[0] * v[1]; });
+
+        std::istringstream str;
+        
+        str.clear();
+        str.str("min 1 0.2");
+        rules.ReadMainRule(getVert, 1, str);
+
+        str.clear();
+        str.str("+ 1 0.2");
+        rules.ReadMainRule(getVert, 1, str);
+    }
 #endif // 0
 
 #if 1
@@ -156,10 +288,10 @@ static inline int test_main()
         //G.vertex[1].attribute = foo;
         G.vertex[1].attribute = 43254;
         std::cout << "e[0] " << G.edge[0].from << "->" << G.edge[0].to << std::endl;
-        std::cout << "v[2] " << G.vertex[2].first_output << ", " << G.vertex[2].first_input << std::endl;
+        std::cout << "v[2] (" << G.vertex[2].first_output << "...; " << G.vertex[2].first_input << "...)" << std::endl;
         //std::cout << "v[1] = " << G.vertex[1].attribute() << std::endl;
         //std::cout << "v[1](2, 3) = " << G.vertex[1].attribute(2, 3) << std::endl;
-        std::cout << "v[1](2, 3) = " << G.vertex[1].attribute << std::endl;
+        std::cout << "v[1] = " << G.vertex[1].attribute << std::endl;
         G.AddVertexes(4000);
     }
     std::cout << std::endl;

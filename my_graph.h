@@ -8,6 +8,8 @@
 #include <concepts>
 #include <string>
 #include <vector>
+#include <stack>
+#include <cassert>
 
 // TAttribute
 
@@ -15,8 +17,7 @@ template <typename value_type>
 struct TAttributeSpec {
 public:
     using rr_val_ptr = std::remove_reference_t<value_type>*;
-private:
-public:
+
     struct TAEmpty {};
 
     template <typename T>
@@ -29,9 +30,12 @@ public:
     template <typename T>
     struct TAUPtr : public std::unique_ptr<T> {
         using TUniquePtr = std::unique_ptr<T>;
-        TAUPtr() : TUniquePtr() {}
-        template <typename... _T>
-        TAUPtr(T&& args) : attribute(std::forward<_T>(args)...) {}
+
+        TAUPtr() : TUniquePtr(std::make_unique<T>()) {}
+
+        template <typename... types>
+        TAUPtr(types&&... args) : TUniquePtr(new T(std::forward<types>(args)...)) {}
+
         T& attribute() {
             return TUniquePtr::operator*();
         };
@@ -51,14 +55,16 @@ public:
     template <        > struct Spec<atValue> { using type = TAValue<value_type >; };
     template <        > struct Spec<atFunc > { using type = TAValue<rr_val_ptr >; };
     template <        > struct Spec<atUPtr > { using type = TAUPtr <value_type >; };
-public:
-    using type = Spec<signal>::type;
+
+    using type = typename Spec<signal>::type;
 };
 
 template <typename value_type>
-using TAttribute = TAttributeSpec<value_type>::type;
+using TAttribute = typename TAttributeSpec<value_type>::type;
 
 // TGraph
+
+enum Graph_Elem_Type { getVert = 0, getEdge };
 
 enum TAnnotatedSpec { asNone = 0, asVert = 1, asEdge = 2, asAll = asVert | asEdge };
 
@@ -94,7 +100,6 @@ public:
 
     using TVertAttrBase = TAttribute<v_attr_value_t>;
     using TEdgeAttrBase = TAttribute<e_attr_value_t>;
-private:
 
     // TVertex
     struct TVertViewerBase {
@@ -103,18 +108,22 @@ private:
     };
 
     struct TVertBase {
-        idx_type first_input{ BAD_IDX };
+        idx_type first_input { BAD_IDX };
         idx_type first_output{ BAD_IDX };
     };
 
-    struct TVertViewer : public TVertViewerBase, public TVertAttrBase {};
-
     struct TVert : public TVertBase, public TVertAttrBase {
-        TVert() : TVertBase(), TVertAttrBase() {};
+        template <typename... types>
+        TVert(types&&... args)
+            : TVertBase()
+            , TVertAttrBase(std::forward<types>(args)...)
+        {};
 
         decltype(auto) view()       { return reinterpret_cast<TVertViewer      &>(*this); }
         decltype(auto) view() const { return reinterpret_cast<TVertViewer const&>(*this); }
     };
+
+    struct TVertViewer : public TVertViewerBase, public TVertAttrBase {};
 
     struct TVertArrViewer {
     private:
@@ -149,18 +158,25 @@ private:
         {};
     };
 
-    struct TEdgeViewer : public TEdgeViewerBase, public TEdgeAttrBase {};
-
-    struct TEdge : public TEdgeBase, public TEdgeAttrBase {
+    struct TEdge final : public TEdgeBase, public TEdgeAttrBase {
         TEdge() = delete;
+
         TEdge(idx_type from, idx_type to, idx_type next_from, idx_type next_to)
             : TEdgeBase(from, to, next_from, next_to)
             , TEdgeAttrBase()
         {};
 
+        template <typename... types>
+        TEdge(idx_type from, idx_type to, idx_type next_from, idx_type next_to, types&&... args)
+            : TEdgeBase(from, to, next_from, next_to)
+            , TEdgeAttrBase(std::forward<types>(args)...)
+        {};
+
         decltype(auto) view()       { return reinterpret_cast<TEdgeViewer      &>(*this); }
         decltype(auto) view() const { return reinterpret_cast<TEdgeViewer const&>(*this); }
     };
+
+    struct TEdgeViewer : public TEdgeViewerBase, public TEdgeAttrBase {};
 
     struct TEdgeArrViewer {
     private:
@@ -173,10 +189,41 @@ private:
         decltype(auto) operator[] (idx_type idx) const { return graph.edge_arr[idx].view(); }
     };
 
+    // Итератор
+    struct TIterator {
+        TGraph_ const* g;
+        idx_type v;
+        idx_type e;
+
+        TIterator(TGraph_ const& g, idx_type v) : g(&g), v(v), e(g.vert_arr[v].first_output) {}
+
+        bool end_e() { return e == BAD_IDX; }
+
+        void go_e() {
+            v = g.edge_arr[e].to;
+            g.vert_arr[v].first_output;
+        }
+
+        idx_type look_e() { return g->edge_arr[e].to; }
+
+        void next_e() { e = g->edge_arr[e].next_from; }
+
+        const TVertBase& operator*() { return g->vert_arr[v]; }
+        const TVertBase& operator->() { return g->vert_arr[v]; }
+    };
+
+    TIterator GetIterator(idx_type vertex_idx) {
+        return TIterator(*this, vertex_idx);
+    }
+
+
+private:
+
     std::vector<TVert> vert_arr;
     std::vector<TEdge> edge_arr;
 
 public:
+
     TVertArrViewer vertex;
     TEdgeArrViewer edge;
 
@@ -186,12 +233,14 @@ public:
         vert_arr.resize(vert_arr.size() + count);
     }
 
-    TVert& AddVertex() {
-        return vert_arr.emplace_back();
+    template <typename... types>
+    TVert& AddVertex(types&&... args) {
+        return vert_arr.emplace_back(std::forward<types>(args)...);
     }
 
-    TEdge& AddEdge(idx_type from, idx_type to) {
-        if (from >= vertex.size() or to >= vertex.size()) {
+    template <typename... types>
+    TEdge& AddEdge(idx_type from, idx_type to, types&&... args) {
+        if (from >= vert_arr.size() or to >= vert_arr.size()) {
             throw std::invalid_argument("Error in AddEdge(from, to): from|to >= vertex.size()");
         }
         idx_type& vffo = vert_arr[from].first_output;
@@ -201,7 +250,67 @@ public:
         idx_type self = static_cast<idx_type>(edge_arr.size());
         vffo = self;
         vtfi = self;
-        return edge_arr.emplace_back(from, to, next_from, next_to);
+        return edge_arr.emplace_back(from, to, next_from, next_to, std::forward<types>(args)...);
+    }
+
+    // Топографическая сортировка для графа
+    void TopSort(bool ignor_cycle = false) {
+        enum state_t { sWhite = 0, sGrey = 1, sBlack = 2 };
+
+        std::stack<TIterator> stack; // стэк
+        std::vector<state_t> state(vert_arr.size(), sWhite); // вектор состояний
+        std::vector<idx_type> v_vec; // вектор порядка узлов
+        std::vector<idx_type> e_vec(vert_arr.size()); // вектор порядка рёбер
+
+        v_vec.reserve(vert_arr.size());
+
+        for (int v = 0; v < vert_arr.size(); ++v) {
+            if (state[v] > sWhite) continue;
+
+            state[v] = sGrey;
+            stack.push(GetIterator(v));
+
+            //void dfs(int v)
+            while (!stack.empty()) {
+                TIterator& cur = stack.top();
+
+                while (!cur.end_e()) {
+                    TIterator next = GetIterator(cur.look_e());
+
+                    if (state[next.v] > sWhite) {
+                        if (state[next.v] == sGrey and !ignor_cycle) throw std::runtime_error("Cycle detected");
+                        cur.next_e();
+                        continue;
+                    }
+
+                    state[next.v] = sGrey;
+                    stack.push(next);
+                    break;
+                }
+
+                if (cur.end_e()) {
+                    v_vec.push_back(cur.v);
+                    e_vec[cur.v] = v_vec.size() - 1;
+                    state[cur.v] = sBlack;
+                    stack.pop();
+                    continue;
+                }
+            }
+
+        }
+
+        assert(v_vec.size() == vert_arr.size());
+
+        std::vector<TVert> new_vert_arr(vert_arr.size());
+        for (int v = 0; v < vert_arr.size(); ++v) {
+            std::swap(new_vert_arr[v], vert_arr[v_vec[v]]);
+        }
+        std::swap(new_vert_arr, vert_arr);
+
+        for (int e = 0; e < edge_arr.size(); ++e) {
+            edge_arr[e].from = e_vec[edge_arr[e].from];
+            edge_arr[e].to   = e_vec[edge_arr[e].to  ];
+        }
     }
 };
 
