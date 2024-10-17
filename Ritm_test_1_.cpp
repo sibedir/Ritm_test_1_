@@ -67,7 +67,7 @@
                 auto str = IO.ReadLine();
                 agent_func.ReadMainRule(getVert, i, str);
             }
-            for (size_t i = 0; i < NV; ++i) {
+            for (size_t i = 0; i < NE; ++i) {
                 auto str = IO.ReadLine();
                 agent_func.ReadMainRule(getEdge, i, str);
             }
